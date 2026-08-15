@@ -1,12 +1,10 @@
 import { createServerFn } from "@tanstack/react-start";
-
+import { ensureSchema, getPipelineStats, listContentItems } from "~/db";
 import type { ContentStatus, ContentType } from "~/schema";
 
 /**
- * Static snapshot of the pipeline for the dashboard shell. Later this will
- * read real counts from `content_items` / `publish_log` via src/db.ts — the
- * shape below is the contract, so the UI and the data source can evolve
- * independently.
+ * Pipeline snapshot served to the dashboard — the contract between the data
+ * source (Postgres via src/db.ts) and the UI (src/routes/index.tsx).
  *
  * NOTE: this file lives under src/routes/api/ so it can become a real
  * `GET /api/pipeline` HTTP route later (TanStack Start API-route style), but
@@ -15,69 +13,62 @@ import type { ContentStatus, ContentType } from "~/schema";
  */
 export interface PipelineSnapshot {
   pipeline: {
-    sheetRows: number;
+    total: number;
     pending: number;
     generating: number;
     staged: number;
     scheduled: number;
     published: number;
     failed: number;
-    lastSyncAt: string | null;
     schedulerRunning: boolean;
   };
-  scheduledContent: Array<{
+  contentItems: Array<{
     id: number;
     type: ContentType;
     caption: string;
     scheduledFor: string;
     status: ContentStatus;
+    error: string | null;
   }>;
 }
 
-const SAMPLE_SNAPSHOT: PipelineSnapshot = {
-  pipeline: {
-    sheetRows: 12,
-    pending: 4,
-    generating: 1,
-    staged: 3,
-    scheduled: 2,
-    published: 2,
-    failed: 0,
-    lastSyncAt: null,
-    schedulerRunning: false,
-  },
-  scheduledContent: [
-    {
-      id: 1,
-      type: "post",
-      caption: "5 automation wins for solo founders",
-      scheduledFor: "2026-08-21T09:00:00.000Z",
-      status: "staged",
-    },
-    {
-      id: 2,
-      type: "carousel",
-      caption: "How we cut 6 hours of busywork a week",
-      scheduledFor: "2026-08-22T09:00:00.000Z",
-      status: "pending",
-    },
-    {
-      id: 3,
-      type: "reel",
-      caption: "Behind the scenes: the pipeline in action",
-      scheduledFor: "2026-08-23T09:00:00.000Z",
-      status: "scheduled",
-    },
-  ],
-};
+function toIso(value: Date | string): string {
+  return value instanceof Date ? value.toISOString() : String(value);
+}
 
 /**
- * Server function: returns the pipeline snapshot to the dashboard.
+ * Server function: returns the live pipeline snapshot to the dashboard —
+ * real status counts from `content_items` (via getPipelineStats) and the real
+ * item list (via listContentItems). The schema is ensured idempotently on
+ * every call, so a fresh deploy renders truthfully even before a migration
+ * has run by hand.
  */
 export const getPipelineStatus = createServerFn({ method: "GET" }).handler(
   async (): Promise<PipelineSnapshot> => {
-    // TODO(integration): query real counts from content_items / publish_log
-    // (see src/schema.ts) instead of returning the static sample.
-    return SAMPLE_SNAPSHOT;
+    await ensureSchema();
+    const stats = await getPipelineStats();
+    const items = await listContentItems();
+    return {
+      pipeline: {
+        total: stats.total,
+        pending: stats.pending,
+        generating: stats.generating,
+        staged: stats.staged,
+        scheduled: stats.scheduled,
+        published: stats.published,
+        failed: stats.failed,
+        // The in-app cron scheduler is a stub until the integrations land —
+        // nothing starts it, so it is truthfully idle.
+        schedulerRunning: false,
+      },
+      contentItems: items.map((item) => ({
+        id: item.id,
+        type: item.contentType,
+        caption: item.caption,
+        scheduledFor: toIso(item.scheduledFor),
+        status: item.status,
+        error: item.error,
+      })),
+    };
   },
 );
