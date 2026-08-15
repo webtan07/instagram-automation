@@ -40,6 +40,9 @@ cp node_modules/ffmpeg-static/ffmpeg .vercel/output/functions/render.func/ffmpeg
 chmod +x .vercel/output/functions/render.func/ffmpeg
 cp node_modules/@resvg/resvg-js-linux-x64-gnu/resvgjs.linux-x64-gnu.node \
   .vercel/output/functions/render.func/node_modules/@resvg/resvg-js-linux-x64-gnu/
+# cp -R cannot create the destination's parent dir; mkdir it first or the
+# fonts never make it into the function (set -e aborts the whole build).
+mkdir -p .vercel/output/functions/render.func/assets
 cp -R assets/fonts .vercel/output/functions/render.func/assets/fonts
 
 echo "[3/3] bundle SSR handler + deps into the render function"
