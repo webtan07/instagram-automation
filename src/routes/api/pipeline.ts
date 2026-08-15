@@ -32,6 +32,7 @@ export interface PipelineSnapshot {
     scheduledFor: string | null;
     status: ContentStatus;
     error: string | null;
+    assetCount: number;
   }>;
 }
 
@@ -73,6 +74,7 @@ export const getPipelineStatus = createServerFn({ method: "GET" }).handler(
         scheduledFor: toIso(item.scheduledFor),
         status: item.status,
         error: item.error,
+        assetCount: item.assetPaths.length,
       })),
     };
   },

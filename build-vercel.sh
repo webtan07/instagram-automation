@@ -24,6 +24,24 @@ mkdir -p .vercel/output/functions/render.func
 cp -R dist/client .vercel/output/static
 rm -f .vercel/output/static/index.html   # SSR owns "/", not a static shell
 
+echo "[2.5/3] copy native runtime deps into the render function"
+# The asset generator uses two native/binary deps that JS bundling cannot
+# inline. bun bundles their .js wrappers fine, but the binaries themselves
+# must be shipped as real files next to the bundle:
+#  - ffmpeg-static: index.js resolves __dirname/ffmpeg → drop the binary at
+#    the function root (src/generator/reel.ts also probes this path).
+#  - @resvg/resvg-js: js-binding.js falls back to require("@resvg/resvg-js-
+#    linux-x64-gnu") → keep the napi .node under node_modules/@resvg so Node
+#    resolution finds it at runtime. Vercel runs glibc x64 (Node 22).
+#  - assets/fonts: serverless runtimes have no system fonts; without them
+#    resvg renders no text. The generator probes <func>/assets/fonts.
+mkdir -p .vercel/output/functions/render.func/node_modules/@resvg/resvg-js-linux-x64-gnu
+cp node_modules/ffmpeg-static/ffmpeg .vercel/output/functions/render.func/ffmpeg
+chmod +x .vercel/output/functions/render.func/ffmpeg
+cp node_modules/@resvg/resvg-js-linux-x64-gnu/resvgjs.linux-x64-gnu.node \
+  .vercel/output/functions/render.func/node_modules/@resvg/resvg-js-linux-x64-gnu/
+cp -R assets/fonts .vercel/output/functions/render.func/assets/fonts
+
 echo "[3/3] bundle SSR handler + deps into the render function"
 # Split build (--outdir + --splitting) keeps TanStack's dynamically-imported
 # server-fn chunks as real files; a single --outfile bundle inlines those

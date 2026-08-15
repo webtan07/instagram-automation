@@ -89,6 +89,46 @@ node-cron ticks every minute, finds `content_items` whose `scheduled_for` has
 arrived and whose assets are `staged`, and publishes them then. This keeps
 scheduling server-side and deterministic, with `publish_log` as the audit trail.
 
+## Asset generation
+
+Each content row is turned into real Instagram-ready assets by
+`generateAssetsForRow(row, sheetRow)` (`src/generator/index.ts`), dispatched by
+`row.type`:
+
+| Row type | Generator | Output |
+|---|---|---|
+| `post` | `src/generator/post.ts` — branded 1080x1350 (4:5) PNG | `assets/generated/post-<sheetRow>-<ts>.png` |
+| `carousel` | `src/generator/carousel.ts` — 3–6 slides, 1080x1350 PNG each (cover + content sections + CTA) | `assets/generated/carousel-<sheetRow>-<ts>-<n>.png` |
+| `reel` | `src/generator/reel.ts` — 1080x1920 (9:16) H.264 MP4, ~15s, 30fps, silent (Ken Burns zoom via ffmpeg) | `assets/generated/reel-<sheetRow>-<ts>.mp4` |
+
+Templates and rasterization live in `src/generator/template.ts`:
+- **No browser.** SVG templates are rasterized with **@resvg/resvg-js** (a small
+  pure-Rust native lib) — no Playwright/Chromium and no Remotion, so the whole
+  renderer fits in a serverless function.
+- **Reels use ffmpeg** via **ffmpeg-static** (bundled static binary, no system
+  install needed).
+- **Fonts** are bundled in `assets/fonts/` (DejaVu Sans, ~1.4MB) — serverless
+  runtimes have no system fonts, and without a registered font resvg renders no
+  text at all.
+
+The dashboard (`/` or `/dashboard`) has a **Generate** button per pending/failed
+row — it calls the `generateAssets` server function
+(`src/routes/api/generate.ts`), which moves the row
+`pending → generating → staged` (with `asset_paths` filled in) or to `failed`
+(with an error message) and shows the result inline.
+
+### Serverless caveat (Vercel)
+
+On Vercel the function filesystem is **ephemeral** — files written to
+`assets/generated/` during a request vanish when the request ends. Staging paths
+in the DB is therefore only meaningful on a machine with persistent disk (local
+dev, or wherever a long-running process lives). That's acceptable for now: the
+upcoming IG-publishing step will **regenerate-and-publish in one pass** (render
+→ upload to Instagram → done, no durable files needed), or we add object
+storage at that point. `build-vercel.sh` already ships the native deps (the
+ffmpeg binary, the resvg napi binding, and `assets/fonts`) into the render
+function so generation *runs* on Vercel today.
+
 ## Project layout
 
 ```
@@ -96,15 +136,21 @@ src/
   db.ts                  # Neon sql() helper (server-only)
   config.ts              # env-var reading + validation
   schema.ts              # DB types + CREATE TABLE SQL (not executed)
-  sheets.ts              # STUB: Google Sheets API v4 reader
-  generator/post.ts      # STUB: Playwright HTML-template image render
-  generator/carousel.ts  # STUB: multi-slide carousel render → asset paths
-  generator/reel.ts      # STUB: Remotion composition → MP4
+  sheets.ts              # Google Sheets API v4 reader (JWT bearer auth)
+  import.ts              # sheet → content_items upsert
+  generator/index.ts     # generateAssetsForRow dispatch + output naming
+  generator/template.ts  # shared SVG brand template + resvg rasterizer + fonts
+  generator/post.ts      # single-image post render (1080x1350 PNG)
+  generator/carousel.ts  # multi-slide carousel render (3–6 PNGs)
+  generator/reel.ts      # reel render via ffmpeg (1080x1920 MP4)
   instagram/client.ts    # STUB: Meta IG Graph API v21.0 publishing client
   scheduler.ts           # STUB: node-cron scheduler wiring
   routes/index.tsx       # dashboard shell (status panel + content list)
-  routes/api/pipeline.ts # server function: static pipeline snapshot
+  routes/api/pipeline.ts # server function: live pipeline snapshot
+  routes/api/sheets.ts   # server function: import from Google Sheets
+  routes/api/generate.ts # server function: generate assets for one row
 ```
 
-All integrations are stubs that `throw new Error("not implemented")` — real
-Google/Instagram calls and DB migrations are later tasks.
+Sheets import and asset generation are implemented and live; the Instagram
+Graph API client and the scheduler are the remaining stubs (`throw new
+Error("not implemented")`), wired as later tasks.

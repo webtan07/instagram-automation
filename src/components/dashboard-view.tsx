@@ -1,6 +1,7 @@
 import { useRouter } from "@tanstack/react-router";
 import { useState } from "react";
 import { importFromSheet } from "~/routes/api/sheets";
+import { generateAssets } from "~/routes/api/generate";
 import type { PipelineSnapshot } from "~/routes/api/pipeline";
 import type { ContentStatus, ContentType } from "~/schema";
 
@@ -77,6 +78,56 @@ function formatScheduledFor(iso: string | null): string {
 }
 
 /**
+ * Per-row action cell: a "Generate" button for pending/failed rows (failed =
+ * retry after an error), a staged-count label once assets exist, and nothing
+ * for rows further along the pipeline. Feedback from the last run is shown
+ * inline beneath the button.
+ */
+function GenerateCell({
+  item,
+  generating,
+  feedback,
+  onGenerate,
+}: {
+  item: { id: number; status: ContentStatus; assetCount: number };
+  generating: boolean;
+  feedback?: { text: string; isError: boolean };
+  onGenerate: () => void;
+}) {
+  const canGenerate = item.status === "pending" || item.status === "failed";
+  if (!canGenerate && item.status !== "generating") {
+    return item.status === "staged" && item.assetCount > 0 ? (
+      <span className="text-xs text-[#34d399]">
+        ✓ {item.assetCount} asset{item.assetCount === 1 ? "" : "s"} staged
+      </span>
+    ) : (
+      <span className="text-xs text-[#475569]">—</span>
+    );
+  }
+  return (
+    <div className="flex flex-col items-start gap-1.5">
+      <button
+        type="button"
+        onClick={onGenerate}
+        disabled={generating}
+        className="rounded-md bg-[#7c3aed] px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-[#6d28d9] disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        {generating ? "Generating…" : item.status === "failed" ? "Retry" : "Generate"}
+      </button>
+      {feedback && (
+        <span
+          className={`max-w-[220px] text-xs leading-snug ${
+            feedback.isError ? "text-[#f87171]" : "text-[#34d399]"
+          }`}
+        >
+          {feedback.text}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/**
  * The dashboard UI, shared by the "/" route and the "/dashboard" alias route.
  * Renders the live pipeline snapshot (rows read from Postgres) plus the
  * Google Sheets import button. Pure view — data comes in via props, so any
@@ -92,6 +143,10 @@ export function DashboardView({
   const [importing, setImporting] = useState(false);
   const [lastResult, setLastResult] = useState<string | null>(null);
   const [lastImportAt, setLastImportAt] = useState<string | null>(null);
+  const [generatingId, setGeneratingId] = useState<number | null>(null);
+  const [rowFeedback, setRowFeedback] = useState<
+    Record<number, { text: string; isError: boolean }>
+  >({});
 
   const sheetId = snapshot.sheetId;
   const sheetLabel = sheetId
@@ -129,6 +184,34 @@ export function DashboardView({
     }
   }
 
+  async function handleGenerate(id: number) {
+    setGeneratingId(id);
+    setRowFeedback((prev) => ({ ...prev, [id]: { text: "Generating…", isError: false } }));
+    try {
+      const res = await generateAssets({ data: { id } });
+      if (res.ok) {
+        const noun = res.assetPaths.length === 1 ? "asset" : "assets";
+        setRowFeedback((prev) => ({
+          ...prev,
+          [id]: { text: `Staged ${res.assetPaths.length} ${noun}`, isError: false },
+        }));
+      } else {
+        setRowFeedback((prev) => ({ ...prev, [id]: { text: res.error, isError: true } }));
+      }
+    } catch (err) {
+      setRowFeedback((prev) => ({
+        ...prev,
+        [id]: {
+          text: `Generate failed: ${err instanceof Error ? err.message : String(err)}`,
+          isError: true,
+        },
+      }));
+    } finally {
+      setGeneratingId(null);
+      await router.invalidate();
+    }
+  }
+
   return (
     <div className="mx-auto flex min-h-dvh w-full max-w-5xl flex-col px-6 py-10">
       {/* Header */}
@@ -142,8 +225,8 @@ export function DashboardView({
         <p className="mt-2 max-w-2xl text-sm text-[#94a3b8]">
           Reads content from a Google Sheet, renders posts / carousels / reels,
           and publishes on schedule. Pipeline state below comes straight from
-          the database — asset generation and IG publishing are still being
-          wired up; the sheet import below is live.
+          the database — sheet import and asset generation are live; the
+          Instagram publish step is still to come.
         </p>
       </header>
       {/* Google Sheets import */}
@@ -236,6 +319,7 @@ export function DashboardView({
                   <th className="px-5 py-3 font-medium">Caption</th>
                   <th className="px-5 py-3 font-medium">Scheduled for</th>
                   <th className="px-5 py-3 font-medium">Status</th>
+                  <th className="px-5 py-3 font-medium">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#1e2937]">
@@ -271,6 +355,14 @@ export function DashboardView({
                         {STATUS_LABEL[item.status]}
                       </span>
                     </td>
+                    <td className="px-5 py-3.5">
+                      <GenerateCell
+                        item={item}
+                        generating={generatingId === item.id}
+                        feedback={rowFeedback[item.id]}
+                        onGenerate={() => handleGenerate(item.id)}
+                      />
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -280,8 +372,8 @@ export function DashboardView({
       </section>
       <footer className="mt-auto pt-10 text-xs text-[#475569]">
         Instagram Content Automation — pipeline state is live from Postgres.
-        Sheet import is live; asset generation and the IG API are still stubbed
-        with TODOs.
+        Sheet import and asset generation are live; the IG API publish step is
+        still to come.
       </footer>
     </div>
   );

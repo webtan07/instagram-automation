@@ -114,6 +114,12 @@ export async function listContentItems(
   return rows.map(toContentItem);
 }
 
+/** Fetch one content item by id, or null when no row has that id. */
+export async function getContentItemById(id: number): Promise<ContentItem | null> {
+  const rows = await sql()`SELECT * FROM content_items WHERE id = ${id}`;
+  return rows.length > 0 ? toContentItem(rows[0]) : null;
+}
+
 export interface PipelineStats {
   total: number;
   pending: number;
