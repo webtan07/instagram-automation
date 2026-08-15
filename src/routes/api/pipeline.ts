@@ -1,4 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
+import { config } from "~/config";
 import { ensureSchema, getPipelineStats, listContentItems } from "~/db";
 import type { ContentStatus, ContentType } from "~/schema";
 
@@ -22,17 +23,20 @@ export interface PipelineSnapshot {
     failed: number;
     schedulerRunning: boolean;
   };
+  /** The configured sheet id, shown shortened on the dashboard. */
+  sheetId: string | null;
   contentItems: Array<{
     id: number;
     type: ContentType;
     caption: string;
-    scheduledFor: string;
+    scheduledFor: string | null;
     status: ContentStatus;
     error: string | null;
   }>;
 }
 
-function toIso(value: Date | string): string {
+function toIso(value: Date | string | null): string | null {
+  if (value === null || value === undefined) return null;
   return value instanceof Date ? value.toISOString() : String(value);
 }
 
@@ -61,6 +65,7 @@ export const getPipelineStatus = createServerFn({ method: "GET" }).handler(
         // nothing starts it, so it is truthfully idle.
         schedulerRunning: false,
       },
+      sheetId: config.googleSheetId ?? null,
       contentItems: items.map((item) => ({
         id: item.id,
         type: item.contentType,

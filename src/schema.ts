@@ -21,14 +21,19 @@ export type ContentStatus =
 /** One materialized row of the Google Sheet, as normalized from `content_items`. */
 export interface ContentItem {
   id: number;
-  /** 1-based row number in the source Google Sheet. */
+  /** 1-based row number in the source Google Sheet (UNIQUE). */
   sheetRow: number;
   contentType: ContentType;
   caption: string;
-  scheduledFor: Date | string;
+  /** Null when the sheet row had no parseable schedule. */
+  scheduledFor: Date | string | null;
   status: ContentStatus;
   /** jsonb — array of asset paths in /assets/generated (or remote URLs). */
   assetPaths: string[];
+  /** jsonb — hashtags read from the sheet. */
+  hashtags: string[];
+  /** Pre-made image URL from the sheet, if any. */
+  imageUrl: string | null;
   igMediaId: string | null;
   error: string | null;
   createdAt: Date | string;
@@ -58,10 +63,12 @@ export const CREATE_TABLES: string[] = [
   sheet_row     int NOT NULL,
   content_type  text NOT NULL CHECK (content_type IN ('post', 'carousel', 'reel')),
   caption       text NOT NULL,
-  scheduled_for timestamptz NOT NULL,
+  scheduled_for timestamptz,
   status        text NOT NULL DEFAULT 'pending'
                 CHECK (status IN ('pending','generating','staged','scheduled','published','failed')),
   asset_paths   jsonb NOT NULL DEFAULT '[]'::jsonb,
+  hashtags      jsonb NOT NULL DEFAULT '[]'::jsonb,
+  image_url     text,
   ig_media_id   text,
   error         text,
   created_at    timestamptz NOT NULL DEFAULT now(),
@@ -78,8 +85,29 @@ export const CREATE_TABLES: string[] = [
   ON content_items (status, scheduled_for)`,
 ];
 
-/** The full DDL as one string (statements separated by ';'), for reference. */
-export const CREATE_TABLES_SQL = CREATE_TABLES.join(";\n") + ";\n";
+/**
+ * Idempotent migrations for databases created before the Sheets import landed
+ * (every statement is safe to re-run). Kept separate from CREATE_TABLES so the
+ * "fresh schema" DDL stays the canonical shape.
+ */
+export const MIGRATIONS: string[] = [
+  // hashtags / image_url columns (Sheets import persistence)
+  `ALTER TABLE content_items ADD COLUMN IF NOT EXISTS hashtags jsonb NOT NULL DEFAULT '[]'::jsonb`,
+  `ALTER TABLE content_items ADD COLUMN IF NOT EXISTS image_url text`,
+  // scheduled_for may be NULL when the sheet row has no parseable schedule
+  `ALTER TABLE content_items ALTER COLUMN scheduled_for DROP NOT NULL`,
+  // unique key on sheet_row → ON CONFLICT (sheet_row) DO UPDATE upsert.
+  // Postgres has no ADD CONSTRAINT IF NOT EXISTS, so guard via pg_constraint.
+  `DO $$ BEGIN
+     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'content_items_sheet_row_key') THEN
+       ALTER TABLE content_items ADD CONSTRAINT content_items_sheet_row_key UNIQUE (sheet_row);
+     END IF;
+   END $$`,
+];
+
+/** The full DDL (tables + migrations) as one string, for reference. */
+export const CREATE_TABLES_SQL =
+  [...CREATE_TABLES, ...MIGRATIONS].join(";\n") + ";\n";
 
 /**
  * Create the schema if it does not exist yet. Safe to call on every app
@@ -97,7 +125,7 @@ export async function ensureSchema(): Promise<void> {
   // statement-by-statement. `${db.unsafe(stmt)}` inlines the raw SQL (the
   // unsafe marker is for interpolation, not a standalone executor) — a plain
   // ${stmt} would bind the DDL as a query parameter and fail.
-  for (const statement of CREATE_TABLES) {
+  for (const statement of [...CREATE_TABLES, ...MIGRATIONS]) {
     await db`${db.unsafe(statement)}`;
   }
 }

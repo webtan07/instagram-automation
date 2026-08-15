@@ -1,6 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useRouter } from "@tanstack/react-router";
+import { useState } from "react";
 import { getPipelineStatus } from "~/routes/api/pipeline";
 import type { PipelineSnapshot } from "~/routes/api/pipeline";
+import { importFromSheet } from "~/routes/api/sheets";
 import type { ContentStatus, ContentType } from "~/schema";
 export const Route = createFileRoute("/")({
   loader: () => getPipelineStatus(),
@@ -64,7 +67,8 @@ function StatusCard({
     </div>
   );
 }
-function formatScheduledFor(iso: string): string {
+function formatScheduledFor(iso: string | null): string {
+  if (iso === null) return "—";
   const d = new Date(iso);
   return Number.isNaN(d.getTime())
     ? iso
@@ -79,6 +83,47 @@ function formatScheduledFor(iso: string): string {
 function Dashboard() {
   const snapshot = Route.useLoaderData() as PipelineSnapshot;
   const { pipeline, contentItems } = snapshot;
+  const router = useRouter();
+  const [importing, setImporting] = useState(false);
+  const [lastResult, setLastResult] = useState<string | null>(null);
+  const [lastImportAt, setLastImportAt] = useState<string | null>(null);
+
+  const sheetId = snapshot.sheetId;
+  const sheetLabel = sheetId
+    ? `${sheetId.slice(0, 12)}…${sheetId.slice(-4)}`
+    : "not configured";
+
+  async function handleImport() {
+    setImporting(true);
+    setLastResult(null);
+    try {
+      const res = await importFromSheet();
+      if (res.ok) {
+        const s = res.summary;
+        const rowRange =
+          s.firstRow !== null && s.lastRow !== null
+            ? ` · sheet rows ${s.firstRow}–${s.lastRow}`
+            : "";
+        const headerNote = s.wroteHeader
+          ? " · sheet was empty — wrote canonical header row"
+          : "";
+        setLastResult(
+          `Imported ${s.imported}, updated ${s.updated}, skipped ${s.skipped}${rowRange}${headerNote}.`,
+        );
+        setLastImportAt(new Date().toLocaleString());
+        await router.invalidate();
+      } else {
+        setLastResult(`Import failed: ${res.error}`);
+      }
+    } catch (err) {
+      setLastResult(
+        `Import failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      setImporting(false);
+    }
+  }
+
   return (
     <div className="mx-auto flex min-h-dvh w-full max-w-5xl flex-col px-6 py-10">
       {/* Header */}
@@ -92,10 +137,48 @@ function Dashboard() {
         <p className="mt-2 max-w-2xl text-sm text-[#94a3b8]">
           Reads content from a Google Sheet, renders posts / carousels / reels,
           and publishes on schedule. Pipeline state below comes straight from
-          the database — the sheet import, asset generation and IG publishing
-          integrations are still being wired up.
+          the database — asset generation and IG publishing are still being
+          wired up; the sheet import below is live.
         </p>
       </header>
+      {/* Google Sheets import */}
+      <section aria-label="Google Sheets import" className="mb-8">
+        <div className="card flex flex-wrap items-center justify-between gap-4 px-5 py-4">
+          <div className="min-w-0">
+            <h2 className="text-lg font-semibold text-[#f8fafc]">
+              Google Sheets import
+            </h2>
+            <p className="mt-1 text-xs text-[#64748b]">
+              Sheet:{" "}
+              <span className="font-mono text-[#94a3b8]">{sheetLabel}</span> —
+              one row = one post / carousel / reel. Re-importing refreshes
+              content without resetting pipeline status.
+            </p>
+            {lastResult && (
+              <p
+                className={`mt-2 text-xs ${
+                  lastResult.startsWith("Import failed")
+                    ? "text-[#f87171]"
+                    : "text-[#94a3b8]"
+                }`}
+              >
+                {lastResult}
+                {lastImportAt && (
+                  <span className="text-[#64748b]"> · ran at {lastImportAt}</span>
+                )}
+              </p>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={handleImport}
+            disabled={importing}
+            className="shrink-0 rounded-lg bg-[#ee2a7b] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#c21e63] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {importing ? "Importing…" : "Import from Google Sheets"}
+          </button>
+        </div>
+      </section>
       {/* Status panel */}
       <section aria-label="Pipeline status" className="mb-8">
         <div className="mb-3 flex items-center justify-between">
@@ -130,11 +213,12 @@ function Dashboard() {
           <div className="card flex flex-col items-center gap-2 px-6 py-14 text-center">
             <span className="text-3xl">📭</span>
             <p className="text-sm font-medium text-[#e2e8f0]">
-              No content yet — connect Google Sheets to import your first row.
+              No content yet — hit “Import from Google Sheets” above to pull
+              in your first row.
             </p>
             <p className="max-w-md text-xs text-[#64748b]">
-              Once the Sheets integration lands, every imported row will appear
-              here with its schedule and pipeline status.
+              Every imported row will appear here with its schedule and
+              pipeline status.
             </p>
           </div>
         ) : (
@@ -191,8 +275,8 @@ function Dashboard() {
       </section>
       <footer className="mt-auto pt-10 text-xs text-[#475569]">
         Instagram Content Automation — pipeline state is live from Postgres.
-        Integrations (Sheets, asset generation, IG API) are still stubbed with
-        TODOs.
+        Sheet import is live; asset generation and the IG API are still stubbed
+        with TODOs.
       </footer>
     </div>
   );

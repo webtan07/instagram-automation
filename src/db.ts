@@ -1,5 +1,5 @@
 import { neon } from "@neondatabase/serverless";
-import { CREATE_TABLES } from "./schema";
+import { CREATE_TABLES, MIGRATIONS } from "./schema";
 import type {
   ContentItem,
   ContentStatus,
@@ -31,13 +31,15 @@ export const sql = () => {
 // ── Schema ────────────────────────────────────────────────────────────────
 
 /**
- * Run the canonical DDL (CREATE TABLE IF NOT EXISTS …). Idempotent.
- * Each statement runs on its own — the Neon serverless driver executes
- * single statements only, so a multi-statement string would silently no-op.
+ * Run the canonical DDL (CREATE TABLE IF NOT EXISTS …) plus the idempotent
+ * migrations (new columns / unique key) — so a database created before this
+ * version self-heals on first use. Each statement runs on its own — the Neon
+ * serverless driver executes single statements only, so a multi-statement
+ * string would silently no-op.
  */
 export async function ensureSchema(): Promise<void> {
   const db = sql();
-  for (const statement of CREATE_TABLES) {
+  for (const statement of [...CREATE_TABLES, ...MIGRATIONS]) {
     // db.unsafe() inlines the raw SQL fragment (it is a marker for the driver,
     // not a standalone executor); plain ${statement} would bind the DDL as a
     // query parameter and fail.
@@ -55,9 +57,11 @@ function toContentItem(row: AnyRow): ContentItem {
     sheetRow: row.sheet_row as number,
     contentType: row.content_type as ContentType,
     caption: row.caption as string,
-    scheduledFor: row.scheduled_for as Date | string,
+    scheduledFor: (row.scheduled_for ?? null) as Date | string | null,
     status: row.status as ContentStatus,
     assetPaths: (row.asset_paths ?? []) as string[],
+    hashtags: (row.hashtags ?? []) as string[],
+    imageUrl: (row.image_url ?? null) as string | null,
     igMediaId: (row.ig_media_id ?? null) as string | null,
     error: (row.error ?? null) as string | null,
     createdAt: row.created_at as Date | string,
@@ -148,16 +152,18 @@ export interface NewContentItem {
   sheetRow: number;
   contentType: ContentType;
   caption: string;
-  scheduledFor: Date | string;
+  scheduledFor: Date | string | null;
   status?: ContentStatus;
   assetPaths?: string[];
+  hashtags?: string[];
+  imageUrl?: string | null;
   igMediaId?: string | null;
   error?: string | null;
 }
 
 /**
- * Insert one content item (defaults: status 'pending', asset_paths '[]') and
- * return it.
+ * Insert one content item (defaults: status 'pending', asset_paths '[]',
+ * hashtags '[]') and return it.
  *
  * jsonb note: the Neon driver serializes a JS *array* parameter as a Postgres
  * array literal (e.g. `{}` for an empty array), not as JSON — so a bare array
@@ -167,16 +173,61 @@ export interface NewContentItem {
 export async function addContentItem(input: NewContentItem): Promise<ContentItem> {
   const status = input.status ?? "pending";
   const assetPaths = JSON.stringify(input.assetPaths ?? []);
+  const hashtags = JSON.stringify(input.hashtags ?? []);
   const igMediaId = input.igMediaId ?? null;
   const error = input.error ?? null;
+  const imageUrl = input.imageUrl ?? null;
   const rows = await sql()`
     INSERT INTO content_items
-      (sheet_row, content_type, caption, scheduled_for, status, asset_paths, ig_media_id, error)
+      (sheet_row, content_type, caption, scheduled_for, status, asset_paths, hashtags, image_url, ig_media_id, error)
     VALUES
-      (${input.sheetRow}, ${input.contentType}, ${input.caption}, ${input.scheduledFor}, ${status}, ${assetPaths}::jsonb, ${igMediaId}, ${error})
+      (${input.sheetRow}, ${input.contentType}, ${input.caption}, ${input.scheduledFor}, ${status}, ${assetPaths}::jsonb, ${hashtags}::jsonb, ${imageUrl}, ${igMediaId}, ${error})
     RETURNING *
   `;
   return toContentItem(rows[0]);
+}
+
+export interface UpsertContentItemInput {
+  sheetRow: number;
+  contentType: ContentType;
+  caption: string;
+  scheduledFor: Date | string | null;
+  hashtags?: string[];
+  imageUrl?: string | null;
+}
+
+export interface UpsertContentItemResult {
+  /** True when the row was inserted, false when an existing row was updated. */
+  inserted: boolean;
+  item: ContentItem;
+}
+
+/**
+ * Upsert a sheet row into content_items keyed on the UNIQUE sheet_row.
+ * On conflict the content columns are refreshed but `status` (and any
+ * pipeline state) is deliberately preserved — re-importing the sheet never
+ * resets progress. `(xmax = 0)` distinguishes insert from update in the
+ * RETURNING clause (xmax is non-zero only for updated rows).
+ */
+export async function upsertContentItem(
+  input: UpsertContentItemInput,
+): Promise<UpsertContentItemResult> {
+  const hashtags = JSON.stringify(input.hashtags ?? []);
+  const imageUrl = input.imageUrl ?? null;
+  const rows = await sql()`
+    INSERT INTO content_items (sheet_row, content_type, caption, scheduled_for, hashtags, image_url)
+    VALUES (${input.sheetRow}, ${input.contentType}, ${input.caption}, ${input.scheduledFor}, ${hashtags}::jsonb, ${imageUrl})
+    ON CONFLICT (sheet_row) DO UPDATE SET
+      content_type = EXCLUDED.content_type,
+      caption = EXCLUDED.caption,
+      scheduled_for = EXCLUDED.scheduled_for,
+      hashtags = EXCLUDED.hashtags,
+      image_url = EXCLUDED.image_url,
+      updated_at = now()
+    RETURNING *, (xmax = 0) AS is_insert
+  `;
+  const row = rows[0];
+  return { inserted: Boolean(row.is_insert), item: toContentItem(row) };
 }
 
 export interface UpdateContentItemExtra {
