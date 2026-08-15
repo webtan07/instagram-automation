@@ -22,8 +22,17 @@ import type { GeneratedReelAsset } from "./reel";
  * stored in content_items.asset_paths are meant for the local/publishing run.
  */
 
-/** Canonical output directory for generated assets (gitignored). */
+/**
+ * Canonical output directory for generated assets (gitignored).
+ *
+ * Defaults to <cwd>/assets/generated for local dev; ASSET_OUTPUT_DIR overrides
+ * it because serverless function roots (Vercel /var/task) are READ-ONLY — the
+ * deploy sets ASSET_OUTPUT_DIR=/tmp/assets/generated so mkdir/write succeed.
+ */
 export function generatedDir(): string {
+  if (process.env.ASSET_OUTPUT_DIR) {
+    return path.resolve(process.env.ASSET_OUTPUT_DIR);
+  }
   return path.resolve(process.cwd(), "assets", "generated");
 }
 
