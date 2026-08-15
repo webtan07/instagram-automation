@@ -1,0 +1,63 @@
+@import "tailwindcss";
+
+@theme {
+  --color-primary: #e1306c;
+  --color-primary-glow: rgba(225, 48, 108, 0.25);
+  --color-accent: #f77737;
+  --color-accent-blue: #405de6;
+  --color-bg-dark: #0b0f17;
+  --color-bg-card: #0f172a;
+  --color-bg-card-hover: #1e293b;
+  --color-border-glow: rgba(225, 48, 108, 0.25);
+}
+
+@layer base {
+  html,
+  body {
+    @apply bg-[#0b0f17] text-[#f8fafc] antialiased;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.6;
+    background-image:
+      linear-gradient(to right, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+    background-size: 42px 42px;
+  }
+}
+
+/* Instagram-gradient accent text */
+.text-gradient {
+  background: linear-gradient(90deg, #f9ce34 0%, #ee2a7b 50%, #6228d7 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Soft glow used on accent cards */
+.shadow-glow {
+  box-shadow: 0 0 24px rgba(238, 42, 123, 0.18);
+}
+
+/* Card used across the dashboard */
+.card {
+  @apply rounded-xl border border-[#1e2937] bg-[#0f172a] p-5;
+}
+
+/* Status chip colors (content pipeline statuses) */
+.chip-pending {
+  @apply bg-[#1e293b] text-[#94a3b8];
+}
+.chip-generating {
+  @apply bg-[#1e2a3b] text-[#facc15];
+}
+.chip-staged {
+  @apply bg-[#102a2a] text-[#2dd4bf];
+}
+.chip-scheduled {
+  @apply bg-[#14243f] text-[#60a5fa];
+}
+.chip-published {
+  @apply bg-[#0f2a1c] text-[#4ade80];
+}
+.chip-failed {
+  @apply bg-[#33141a] text-[#f87171];
+}
