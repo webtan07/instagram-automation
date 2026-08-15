@@ -1,13 +1,15 @@
 /**
  * Database types + DDL for the Instagram Content Automation app.
  *
- * The CREATE TABLE SQL below is the canonical schema — it is intentionally a
- * string constant and is NOT executed by this scaffold. A later migration task
- * runs it against Neon (via src/db.ts) once DATABASE_URL is connected.
+ * The CREATE TABLE SQL below is the canonical schema. Unlike the scaffold,
+ * it is now executable: `ensureSchema()` runs it (idempotently — every
+ * statement uses IF NOT EXISTS) against the configured Neon database via
+ * src/db.ts, so a fresh deploy self-heals before the first query.
+ *
+ * Column names in the DB are snake_case; src/db.ts normalizes every row to
+ * the camelCase interfaces below (snake_case columns → camelCase fields).
  */
-
 export type ContentType = "post" | "carousel" | "reel";
-
 export type ContentStatus =
   | "pending" // read from the sheet, not yet queued
   | "generating" // assets are being rendered
@@ -16,35 +18,42 @@ export type ContentStatus =
   | "published" // successfully published to Instagram
   | "failed"; // generation or publishing failed; `error` holds details
 
-/** One row of the Google Sheet, materialized into the DB. */
+/** One materialized row of the Google Sheet, as normalized from `content_items`. */
 export interface ContentItem {
   id: number;
-  sheet_row: number;
-  content_type: ContentType;
+  /** 1-based row number in the source Google Sheet. */
+  sheetRow: number;
+  contentType: ContentType;
   caption: string;
-  scheduled_for: Date | string;
+  scheduledFor: Date | string;
   status: ContentStatus;
   /** jsonb — array of asset paths in /assets/generated (or remote URLs). */
-  asset_paths: string[];
-  ig_media_id: string | null;
+  assetPaths: string[];
+  igMediaId: string | null;
   error: string | null;
-  created_at: Date | string;
-  updated_at: Date | string;
+  createdAt: Date | string;
+  updatedAt: Date | string;
 }
 
-/** One successful publish attempt, for audit/retry. */
+/** One successful publish attempt, for audit/retry, as normalized from `publish_log`. */
 export interface PublishLog {
   id: number;
-  content_item_id: number;
-  published_at: Date | string;
-  ig_media_id: string;
+  contentItemId: number;
+  publishedAt: Date | string;
+  igMediaId: string;
   /** jsonb — raw API response from POST /{ig-user-id}/media_publish. */
   response: Record<string, unknown>;
 }
 
-/** Canonical DDL. Run against Neon in a later migration task. */
-export const CREATE_TABLES_SQL = `
-CREATE TABLE IF NOT EXISTS content_items (
+/**
+ * Canonical DDL — every statement is idempotent (IF NOT EXISTS).
+ *
+ * Kept as an array of individual statements: the Neon serverless driver
+ * (like the WDA site's db layer) executes each statement on its own, so
+ * `ensureSchema()` runs them one at a time.
+ */
+export const CREATE_TABLES: string[] = [
+  `CREATE TABLE IF NOT EXISTS content_items (
   id            serial PRIMARY KEY,
   sheet_row     int NOT NULL,
   content_type  text NOT NULL CHECK (content_type IN ('post', 'carousel', 'reel')),
@@ -57,16 +66,38 @@ CREATE TABLE IF NOT EXISTS content_items (
   error         text,
   created_at    timestamptz NOT NULL DEFAULT now(),
   updated_at    timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS publish_log (
+)`,
+  `CREATE TABLE IF NOT EXISTS publish_log (
   id              serial PRIMARY KEY,
   content_item_id int NOT NULL REFERENCES content_items(id) ON DELETE CASCADE,
   published_at    timestamptz NOT NULL DEFAULT now(),
   ig_media_id     text NOT NULL,
   response        jsonb NOT NULL DEFAULT '{}'::jsonb
-);
+)`,
+  `CREATE INDEX IF NOT EXISTS idx_content_items_status_due
+  ON content_items (status, scheduled_for)`,
+];
 
-CREATE INDEX IF NOT EXISTS idx_content_items_status_due
-  ON content_items (status, scheduled_for);
-`;
+/** The full DDL as one string (statements separated by ';'), for reference. */
+export const CREATE_TABLES_SQL = CREATE_TABLES.join(";\n") + ";\n";
+
+/**
+ * Create the schema if it does not exist yet. Safe to call on every app
+ * startup / before any query — the DDL is fully idempotent.
+ *
+ * Lives here (schema module) as the canonical home of "make the DB match the
+ * schema"; the implementation delegates to src/db.ts's `sql()` via a dynamic
+ * import so this module stays a pure source of truth for types + DDL (no
+ * static import cycle).
+ */
+export async function ensureSchema(): Promise<void> {
+  const { sql } = await import("./db");
+  const db = sql();
+  // Neon's HTTP driver executes one statement per call, so run the DDL array
+  // statement-by-statement. `${db.unsafe(stmt)}` inlines the raw SQL (the
+  // unsafe marker is for interpolation, not a standalone executor) — a plain
+  // ${stmt} would bind the DDL as a query parameter and fail.
+  for (const statement of CREATE_TABLES) {
+    await db`${db.unsafe(statement)}`;
+  }
+}
